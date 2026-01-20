@@ -1,12 +1,24 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 
 const VaultContext = createContext();
 
 export const VaultProvider = ({ children }) => {
-  const [activeVault, setActiveVault] = useState(null);
+  const [vaults, setVaults] = useState([]);
+
+  useEffect(() => {
+  const storedVaults = JSON.parse(localStorage.getItem("vaults")) || [];
+
+  const normalizedVaults = storedVaults.map(vault => ({
+    ...vault,
+    files: vault.files || [],
+    storageUsed: vault.storageUsed || 0
+  }));
+
+  setVaults(normalizedVaults);
+}, []);
 
   return (
-    <VaultContext.Provider value={{ activeVault, setActiveVault }}>
+    <VaultContext.Provider value={{ vaults, setVaults }}>
       {children}
     </VaultContext.Provider>
   );

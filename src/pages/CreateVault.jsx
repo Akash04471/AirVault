@@ -18,7 +18,9 @@ const CreateVault = () => {
       id: Date.now(),
       name: vaultName,
       hasPass,
-      pass: hasPass ? pass : null
+      pass: hasPass ? pass : null,
+      files: [],
+      storageUsed: 0
     };
 
     localStorage.setItem("vaults", JSON.stringify([
