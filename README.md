@@ -1,93 +1,16 @@
-# 🔐 AirVault – Secure Personal File Vault with Encrypted Storage & Smart Sharing
+# React + Vite
 
-AirVault is a **privacy-first, personalized file vault** that provides **end-to-end encrypted storage**, **multi-layer authentication**, and **intelligent file sharing mechanisms**.  
-It is designed as a secure alternative to conventional cloud storage platforms, giving users **full control and ownership of their data**.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
----
+Currently, two official plugins are available:
 
-## 📌 Project Overview
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-Modern cloud storage solutions offer convenience but often compromise on **privacy, transparency, and user control**.  
-AirVault addresses these concerns by implementing a **zero-knowledge architecture**, ensuring that **only users can decrypt and access their files** — even the system administrators cannot view stored content.
+## React Compiler
 
-The system supports:
-- Encrypted file storage
-- Secure, time-bound sharing
-- Proximity-based file transfer
-- Real-time access monitoring and alerts
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
----
+## Expanding the ESLint configuration
 
-## 🎯 Objectives
-
-- Provide **end-to-end encrypted file storage** using AES-256 and RSA
-- Ensure **zero-knowledge access** with layered authentication
-- Enable **smart, controlled file sharing** with granular permissions
-- Offer **real-time access logs and security alerts**
-- Deliver a **user-friendly, responsive web interface**
-
----
-
-## 🧠 Key Features
-
-### 🔒 Security & Privacy
-- Client-side AES-256 encryption
-- RSA-based key wrapping
-- Zero-knowledge architecture
-- JWT-based authentication
-- Two-Factor Authentication (2FA – TOTP)
-- Vault-specific PIN protection
-
-### 📁 File Management
-- Secure upload & download
-- Encrypted storage using MongoDB GridFS
-- Large file support with chunked uploads
-- Searchable vaults and folders
-
-### 🔁 Smart Sharing
-- Time-limited secure links
-- QR-code based file sharing
-- AirDrop-style proximity sharing
-- View-only / download permissions
-- Password-protected sharing
-- Instant access revocation
-
-### 📊 Monitoring & Alerts
-- Detailed access logs
-- Device & IP tracking
-- Real-time anomaly alerts
-- Failed login detection
-- Download & share activity auditing
-
----
-
-## 🛠️ Tech Stack
-
-### Frontend
-- React.js (v18+)
-- TypeScript
-- Tailwind CSS / Material UI
-- Web Crypto API
-- WebRTC (for proximity sharing)
-
-### Backend
-- Node.js
-- Express.js
-- JWT Authentication
-- Socket.io (real-time alerts)
-- Helmet, CORS, Rate Limiting
-
-### Database & Storage
-- MongoDB
-- GridFS (encrypted file storage)
-- Role-Based Access Control (RBAC)
-
-### Security
-- AES-256-GCM
-- RSA-OAEP
-- bcrypt (password hashing)
-- OWASP Top 10 compliant APIs
-
----
-
-
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
