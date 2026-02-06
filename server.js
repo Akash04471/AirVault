@@ -64,6 +64,17 @@ app.use(
   }),
 );
 
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path} from ${req.headers.origin || 'no origin'}`);
+  
+  if (req.method === 'OPTIONS') {
+    console.log('Preflight request - responding with 204');
+    return res.status(204).end();
+  }
+  
+  next();
+});
+
 // ====================================
 // MIDDLEWARE
 // ====================================
