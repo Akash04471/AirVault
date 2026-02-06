@@ -31,11 +31,20 @@ app.use(
     origin: function (origin, callback) {
       if (!origin) return callback(null, true);
 
+      if (process.env.NODE_ENV !== 'production') {
+        if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+          return callback(null, true);
+        }
+      }
+
       const allowedOrigins = [
         process.env.FRONTEND_URL,
         "http://localhost:5173",
         "http://localhost:3000",
-      ];
+        "http://localhost:5174", 
+        "http://localhost:5175",
+        "http://localhost:3001",
+      ].filter(Boolean); 
 
       const isAllowed = allowedOrigins.indexOf(origin) !== -1 || 
                         (origin && origin.endsWith('.vercel.app'));
@@ -43,6 +52,7 @@ app.use(
       if (isAllowed) {
         callback(null, true);
       } else {
+        console.log('CORS blocked origin:', origin);
         callback(new Error("Not allowed by CORS"));
       }
     },
