@@ -1,7 +1,3 @@
-// ====================================
-// AIRVAULT BACKEND SERVER - COMPLETE
-// ====================================
-
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
@@ -65,8 +61,6 @@ app.use(
 );
 
 app.use((req, res, next) => {
-  console.log(`${req.method} ${req.path} from ${req.headers.origin || 'no origin'}`);
-  
   if (req.method === 'OPTIONS') {
     console.log('Preflight request - responding with 204');
     return res.status(204).end();
