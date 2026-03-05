@@ -1,305 +1,450 @@
 // ====================================
-// VAULT API SERVICE
+// VAULT API SERVICE  —  Zero-Knowledge Edition
 // ====================================
 
-// Get base URL - should include /api
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+import { encryptFile, decryptToBlob, resolveVaultKey, generateRandomKey, importKeyFromHex, storeVaultKeyHex, getVaultKeyHex } from "./ZKcrypto";
 
-// Helper function to get auth token
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+
+// ── auth helpers ─────────────────────────────────────────────
+
 const getAuthToken = () => {
-  const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+  const token = localStorage.getItem("token") || sessionStorage.getItem("token");
   if (!token) {
-    console.warn('⚠️ No authentication token found');
-    console.log('💡 Redirecting to login page...');
-    window.location.href = '/login';
+    console.warn("⚠️ No authentication token found");
+    window.location.href = "/login";
     return null;
   }
   return token;
 };
 
-// Helper function to clear auth data and redirect to login
-const handleAuthError = (errorMessage = 'Session expired. Please login again.') => {
-  console.error('🔒 Authentication Error:', errorMessage);
-  
-  // Clear all auth data
-  localStorage.removeItem('token');
-  sessionStorage.removeItem('token');
-  localStorage.removeItem('user');
-  
-  // Redirect to login page
-  window.location.href = '/login';
+const handleAuthError = (msg = "Session expired. Please login again.") => {
+  console.error("🔒 Auth Error:", msg);
+  localStorage.removeItem("token");
+  sessionStorage.removeItem("token");
+  localStorage.removeItem("user");
+  window.location.href = "/login";
 };
 
-// Helper function to handle API responses
 const handleResponse = async (response) => {
-  // Handle authentication errors (401 Unauthorized, 403 Forbidden)
   if (response.status === 401 || response.status === 403) {
-    const data = await response.json().catch(() => ({ message: 'Authentication failed' }));
-    
-    console.error('🔒 Authentication failed - Token expired or invalid');
-    console.log('Status:', response.status);
-    console.log('Message:', data.message);
-    
-    // Clear auth and redirect to login
+    const data = await response.json().catch(() => ({ message: "Authentication failed" }));
     handleAuthError(data.message);
-    
-    // Throw error to stop further execution
-    throw new Error(data.message || 'Session expired');
+    throw new Error(data.message || "Session expired");
   }
-  
   const data = await response.json();
-  
-  if (!response.ok) {
-    throw new Error(data.message || 'Something went wrong');
-  }
-  
+  if (!response.ok) throw new Error(data.message || "Something went wrong");
   return data;
 };
 
-// ====================================
-// VAULT API FUNCTIONS
-// ====================================
+const authHeaders = (token) => ({
+  "Content-Type": "application/json",
+  Authorization: `Bearer ${token}`,
+});
+
+// ── zero-knowledge key cache (per session) ───────────────────
+const _keyCache = new Map();
+
+// ── Helper: persist a passwordless vault key to the server ───
+// Only persists if no key exists yet — never overwrites existing key
+async function _persistPasswordlessKey(vaultId, keyHex, token) {
+  try {
+    // Check if key already exists on server
+    const existing = await fetch(`${API_BASE_URL}/vaults/${vaultId}/zk-key`, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "include",
+    });
+
+    if (existing.ok) {
+      const data = await existing.json();
+      if (data.keyHex) {
+        // Key already exists — do NOT overwrite
+        console.log("Key already exists on server, skipping persist");
+        return;
+      }
+    }
+
+    // No key on server yet — safe to persist
+    await fetch(`${API_BASE_URL}/vaults/${vaultId}/zk-key`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ keyHex }),
+    });
+  } catch (e) {
+    console.warn("Could not persist vault key to server:", e.message);
+  }
+}
+
+// ── Unlock vault key ─────────────────────────────────────────
+export async function unlockVaultKey(vaultId, hasPassword, passphrase = null, saltB64 = null) {
+  const token = localStorage.getItem("token") || sessionStorage.getItem("token");
+  if (!token) throw new Error("Not authenticated");
+
+  if (!hasPassword) {
+    const lsKey = `zk_vault_key_${vaultId}`;
+
+    // Always fetch from server first — server is source of truth
+    try {
+      const res = await fetch(`${API_BASE_URL}/vaults/${vaultId}/zk-key`, {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
+      });
+      if (res.ok) {
+        const { keyHex } = await res.json();
+        if (keyHex) {
+          localStorage.setItem(lsKey, keyHex);
+          storeVaultKeyHex(vaultId, keyHex);
+          const key = await importKeyFromHex(keyHex);
+          _keyCache.set(vaultId, key);
+          return key;
+        }
+      }
+    } catch (e) {
+      console.warn("Could not fetch key from server:", e.message);
+    }
+
+    // No key on server — check local storage
+    let hex = localStorage.getItem(lsKey) || getVaultKeyHex(vaultId);
+
+    if (!hex) {
+      // Truly new vault — generate fresh key
+      const { key, rawHex } = await generateRandomKey();
+      hex = rawHex;
+      localStorage.setItem(lsKey, hex);
+      storeVaultKeyHex(vaultId, hex);
+      _keyCache.set(vaultId, key);
+      await _persistPasswordlessKey(vaultId, hex, token);
+      return key;
+    }
+
+    // Key found locally but not on server — persist it
+    storeVaultKeyHex(vaultId, hex);
+    const key = await importKeyFromHex(hex);
+    _keyCache.set(vaultId, key);
+    await _persistPasswordlessKey(vaultId, hex, token);
+    return key;
+  }
+
+  // Password vault
+  const { key, saltB64: newSalt } = await resolveVaultKey(
+    vaultId, hasPassword, passphrase, saltB64
+  );
+  _keyCache.set(vaultId, key);
+
+  if (hasPassword && newSalt) {
+    const saltRes = await fetch(`${API_BASE_URL}/vaults/${vaultId}/zk-salt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ saltB64: newSalt }),
+    });
+    if (!saltRes.ok) {
+      const err = await saltRes.json().catch(() => ({}));
+      throw new Error(`Failed to save ZK salt: ${err.message || saltRes.status}`);
+    }
+  }
+
+  return key;
+}
+
+// ── Restore vault key on page load ───────────────────────────
+export async function restoreVaultKey(vaultId, hasPassword, passphrase = null, saltB64 = null) {
+  const token = localStorage.getItem("token") || sessionStorage.getItem("token");
+  if (!token) throw new Error("Not authenticated");
+
+  if (!hasPassword) {
+    const lsKey = `zk_vault_key_${vaultId}`;
+
+    // Always fetch from server first
+    try {
+      const res = await fetch(`${API_BASE_URL}/vaults/${vaultId}/zk-key`, {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
+      });
+      if (res.ok) {
+        const { keyHex } = await res.json();
+        if (keyHex) {
+          localStorage.setItem(lsKey, keyHex);
+          storeVaultKeyHex(vaultId, keyHex);
+          const key = await importKeyFromHex(keyHex);
+          _keyCache.set(vaultId, key);
+          return key;
+        }
+      }
+    } catch (e) {
+      console.warn("Could not fetch key from server:", e.message);
+    }
+
+    // Fallback to local storage
+    const hex = localStorage.getItem(lsKey) || getVaultKeyHex(vaultId);
+    if (hex) {
+      storeVaultKeyHex(vaultId, hex);
+      const key = await importKeyFromHex(hex);
+      _keyCache.set(vaultId, key);
+      return key;
+    }
+
+    throw new Error("Vault key not found. Please re-upload your files.");
+  }
+
+  // Password vault
+  return unlockVaultKey(vaultId, hasPassword, passphrase, saltB64);
+}
+
+// ── Get cached vault key ──────────────────────────────────────
+export function getVaultKey(vaultId) {
+  const k = _keyCache.get(vaultId);
+  if (!k) throw new Error("Vault is locked. Unlock it before accessing files.");
+  return k;
+}
+
+export function lockVault(vaultId) {
+  _keyCache.delete(vaultId);
+}
+
+// ── vault CRUD ───────────────────────────────────────────────
 
 export const vaultApi = {
-  // Fetch all vaults for the authenticated user
+
   getAllVaults: async () => {
-    try {
-      const token = getAuthToken();
-      if (!token) return; // Will redirect to login
-      
-      const response = await fetch(`${API_BASE_URL}/vaults`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching vaults:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults`, {
+      headers: authHeaders(token), credentials: "include",
+    }));
   },
 
-  // Fetch a single vault by ID
   getVaultById: async (vaultId) => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/vaults/${vaultId}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching vault:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}`, {
+      headers: authHeaders(token), credentials: "include",
+    }));
   },
 
-  // Create a new vault
   createVault: async (vaultData) => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/vaults/create`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-        body: JSON.stringify(vaultData),
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error creating vault:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/create`, {
+      method: "POST", headers: authHeaders(token), credentials: "include",
+      body: JSON.stringify(vaultData),
+    }));
   },
 
-  // Verify vault password
   verifyVaultPassword: async (vaultId, password) => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/vaults/${vaultId}/verify-password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-        body: JSON.stringify({ password }),
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error verifying vault password:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}/verify-password`, {
+      method: "POST", headers: authHeaders(token), credentials: "include",
+      body: JSON.stringify({ password }),
+    }));
   },
 
-  // Update vault
   updateVault: async (vaultId, updateData) => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/vaults/${vaultId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-        body: JSON.stringify(updateData),
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error updating vault:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}`, {
+      method: "PUT", headers: authHeaders(token), credentials: "include",
+      body: JSON.stringify(updateData),
+    }));
   },
 
-  // Delete vault
   deleteVault: async (vaultId) => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/vaults/${vaultId}`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error deleting vault:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}`, {
+      method: "DELETE", headers: authHeaders(token), credentials: "include",
+    }));
   },
 
-  // Update vault stats (file count and total size)
   updateVaultStats: async (vaultId, stats) => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/vaults/${vaultId}/stats`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-        body: JSON.stringify(stats),
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error updating vault stats:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}/stats`, {
+      method: "PATCH", headers: authHeaders(token), credentials: "include",
+      body: JSON.stringify(stats),
+    }));
   },
 
-  // Get user profile
   getUserProfile: async () => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/user/profile`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/user/profile`, {
+      headers: authHeaders(token), credentials: "include",
+    }));
   },
 
-  // Get audit logs
   getAuditLogs: async () => {
-    try {
-      const token = getAuthToken();
-      if (!token) return;
-      
-      const response = await fetch(`${API_BASE_URL}/user/audit-logs`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        credentials: 'include',
-      });
-      
-      return await handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching audit logs:', error);
-      throw error;
-    }
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/user/audit-logs`, {
+      headers: authHeaders(token), credentials: "include",
+    }));
   },
 
-  // Validate token (optional - for manual checks)
-  // Validate token (optional - for manual checks)
-validateToken: async () => {
-  try {
-    const token = getAuthToken();
-    if (!token) return null; // Return null instead of false
-    
-    const response = await fetch(`${API_BASE_URL}/auth/validate-token`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      credentials: 'include',
-    });
-    
-    if (response.status === 401 || response.status === 403) {
-      handleAuthError('Token validation failed');
-      return null;
-    }
-    
-    if (!response.ok) {
-      return null;
-    }
-    
-    const data = await response.json();
-    return data; // Return the full response with user data
-  } catch (error) {
-    console.error('Error validating token:', error);
-    return null;
-  }
-},
+  validateToken: async () => {
+    try {
+      const token = getAuthToken(); if (!token) return null;
+      const response = await fetch(`${API_BASE_URL}/auth/validate-token`, {
+        headers: authHeaders(token), credentials: "include",
+      });
+      if (!response.ok) { handleAuthError("Token validation failed"); return null; }
+      return response.json();
+    } catch { return null; }
+  },
 
-  // Manual logout function
-  logout: () => {
-    handleAuthError('Logging out...');
-  }
+  uploadVaultFile: ({ vaultId, file, metadata, folderId, onProgress }) => {
+    const token = getAuthToken();
+    if (!token) return { promise: Promise.reject(new Error("No token")), abort: () => {} };
+
+    let xhr;
+    const abort = () => xhr?.abort();
+
+    const promise = (async () => {
+      const key = getVaultKey(vaultId);
+      const { encryptedBlob, originalName, mimeType } = await encryptFile(file, key);
+
+      const formData = new FormData();
+      formData.append("file", encryptedBlob, `${originalName}.enc`);
+      formData.append("originalName", originalName);
+      formData.append("originalMimeType", mimeType);
+      formData.append("zeroKnowledge", "true");
+      formData.append("category",    metadata.category    || "General");
+      formData.append("tags",        JSON.stringify(metadata.tags || []));
+      formData.append("description", metadata.description || "");
+      formData.append("label",       metadata.label       || "");
+      formData.append("folderId",    folderId             || "root");
+
+      return new Promise((resolve, reject) => {
+        xhr = new XMLHttpRequest();
+        const tracker = { lastLoaded: 0, lastTime: performance.now() };
+
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable && onProgress) {
+            const now = performance.now(), delta = now - tracker.lastTime;
+            const speed = delta > 0 ? ((e.loaded - tracker.lastLoaded) / delta) * 1000 : 0;
+            tracker.lastLoaded = e.loaded; tracker.lastTime = now;
+            onProgress({ loaded: e.loaded, total: e.total, speed });
+          }
+        });
+
+        xhr.addEventListener("load", () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(JSON.parse(xhr.responseText));
+          } else if (xhr.status === 401) {
+            handleAuthError("Session expired");
+            reject(new Error("Session expired"));
+          } else if (xhr.status === 403) {
+            // 403 = permission denied (not a session issue — don't wipe the token)
+            let msg = "You don't have upload permission for this vault";
+            try { msg = JSON.parse(xhr.responseText)?.message || msg; } catch {}
+            reject(new Error(msg));
+          } else {
+            try { reject(new Error(JSON.parse(xhr.responseText).message || "Upload failed")); }
+            catch { reject(new Error("Upload failed")); }
+          }
+        });
+
+        xhr.addEventListener("error", () => reject(new Error("Upload failed")));
+        xhr.addEventListener("abort", () => reject(new Error("Upload canceled")));
+
+        xhr.open("POST", `${API_BASE_URL}/vaults/${vaultId}/files/upload`);
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        xhr.withCredentials = true;
+        xhr.send(formData);
+      });
+    })();
+
+    return { promise, abort };
+  },
+
+  downloadVaultFile: async (vaultId, fileId, originalName, mimeType) => {
+    const token = getAuthToken(); if (!token) return;
+
+    const response = await fetch(
+      `${API_BASE_URL}/vaults/${vaultId}/files/${fileId}/download`,
+      { headers: { Authorization: `Bearer ${token}` }, credentials: "include" }
+    );
+    if (!response.ok) throw new Error("Could not get download URL");
+
+    const { downloadUrl, localPath } = await response.json();
+    const url = downloadUrl || localPath;
+
+    const encResponse = await fetch(url);
+    if (!encResponse.ok) throw new Error("Could not fetch encrypted file");
+    const encryptedBuf = await encResponse.arrayBuffer();
+
+    const key       = getVaultKey(vaultId);
+    const plainBlob = await decryptToBlob(encryptedBuf, key, mimeType || "application/octet-stream");
+
+    const blobUrl = URL.createObjectURL(plainBlob);
+    const a       = document.createElement("a");
+    a.href        = blobUrl;
+    a.download    = originalName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+  },
+
+  getVaultFiles: async (vaultId, folderId) => {
+    const token = getAuthToken(); if (!token) return;
+    const url = folderId
+      ? `${API_BASE_URL}/vaults/${vaultId}/files?folderId=${encodeURIComponent(folderId)}`
+      : `${API_BASE_URL}/vaults/${vaultId}/files`;
+    return handleResponse(await fetch(url, {
+      headers: authHeaders(token), credentials: "include",
+    }));
+  },
+
+  deleteVaultFile: async (vaultId, fileId) => {
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}/files/${fileId}`, {
+      method: "DELETE", headers: authHeaders(token), credentials: "include",
+    }));
+  },
+
+  getVaultStorage: async (vaultId) => {
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}/storage`, {
+      headers: authHeaders(token), credentials: "include",
+    }));
+  },
+
+  createFolder: async (vaultId, { name, parentId, folderId }) => {
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}/folders`, {
+      method: "POST", headers: authHeaders(token), credentials: "include",
+      body: JSON.stringify({ name, parentId, folderId }),
+    }));
+  },
+
+  getFolders: async (vaultId) => {
+    const token = getAuthToken(); if (!token) return;
+    return handleResponse(await fetch(`${API_BASE_URL}/vaults/${vaultId}/folders`, {
+      headers: authHeaders(token), credentials: "include",
+    }));
+  },
+
+  updateUserProfile: async (payload) => {
+    const token = getAuthToken();
+    if (!token) return;
+    const isFormData = payload instanceof FormData;
+    const headers = { Authorization: `Bearer ${token}` };
+    if (!isFormData) headers["Content-Type"] = "application/json";
+    return handleResponse(
+      await fetch(`${API_BASE_URL}/user/profile`, {
+        method: "PUT",
+        headers,
+        credentials: "include",
+        body: isFormData ? payload : JSON.stringify(payload),
+      })
+    );
+  },
+
+  deleteAccount: async () => {
+    const token = getAuthToken();
+    if (!token) return;
+    return handleResponse(
+      await fetch(`${API_BASE_URL}/user/account`, {
+        method: "DELETE",
+        headers: authHeaders(token),
+        credentials: "include",
+      })
+    );
+  },
+
+  logout: () => handleAuthError("Logging out..."),
 };
 
 export default vaultApi;
