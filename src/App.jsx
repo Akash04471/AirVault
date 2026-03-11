@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import CreateVault from "./pages/CreateVault";
 import VaultSelector from "./pages/VaultSelector";
 import VaultDashboard from "./pages/VaultDashboard";
@@ -93,12 +93,11 @@ function App() {
     setIsLoading(false);
   };
 
-  if (isLoading) {
-    return <LoadingScreen onLoadingComplete={handleLoadingComplete} />;
-  }
+ 
 
   return (
     <ThemeProvider>
+      {isLoading && <LoadingScreen onLoadingComplete={handleLoadingComplete} />}
       <BrowserRouter>
         <VaultProvider>
           <Routes>
@@ -107,7 +106,7 @@ function App() {
             <Route path="/auth" element={<AuthPage />} />
 
             <Route path="/share/:fileId" element={<SharePage />} />
-            {/* ✅ Public vault join route — no auth required, handles it internally */}
+            {/* Public vault join route — no auth required, handles it internally */}
             <Route path="/vault/join/:vaultId" element={<VaultJoinPage />} />
 
             <Route 
@@ -191,7 +190,6 @@ function App() {
             />
 
             <Route path="*" element={<Navigate to="/" replace />} />
-
           </Routes>
         </VaultProvider>
       </BrowserRouter>
